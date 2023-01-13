@@ -21,11 +21,9 @@ module Main (main) where
 
 import Network.Wai.Handler.Warp (run)
 import Servant
--- import Servant.API
--- import Servant.Server
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Database.Esqueleto.Experimental
+import Database.Esqueleto.Experimental hiding (Union)
 import Database.Persist.TH
        ( mkMigrate
        , mkPersist
@@ -41,6 +39,28 @@ import Database.Persist.Postgresql (withPostgresqlConn)
 import Control.Monad.Logger
 import Data.Aeson
 import GHC.Generics (Generic)
+import Control.Monad.Except (ExceptT (..), MonadError (..), MonadTrans (..), runExceptT)
+
+-- uverbT taken from servant documenation
+newtype UVerbT xs m a = UVerbT { unUVerbT :: ExceptT (Union xs) m a }
+  deriving (Functor, Applicative, Monad, MonadTrans, MonadIO )
+
+-- | Deliberately hide 'ExceptT's 'MonadError' instance to be able to use
+-- underlying monad's instance.
+instance MonadError e m => MonadError e (UVerbT xs m) where
+  throwError = lift . throwError
+  catchError (UVerbT act) h = UVerbT $ ExceptT $
+    runExceptT act `catchError` (runExceptT . unUVerbT . h)
+
+-- | This combinator runs 'UVerbT'. It applies 'respond' internally, so the handler
+-- may use the usual 'return'.
+runUVerbT :: (Monad m, HasStatus x, IsMember x xs) => UVerbT xs m x -> m (Union xs)
+runUVerbT (UVerbT act) = either id id <$> runExceptT (act >>= respond)
+
+-- | Short-circuit 'UVerbT' computation returning one of the response types.
+throwUVerb :: (Monad m, HasStatus x, IsMember x xs) => x -> UVerbT xs m a
+throwUVerb = UVerbT . ExceptT . fmap Left . respond
+
 
 data PeriodOfTime = PeriodOfTime {start :: Int, lengthOfPeriod :: Int} deriving (Generic)
 
@@ -63,9 +83,9 @@ share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
 
 
 
-type MainApi = "login" :> ReqBody '[PlainText] String :> Post '[JSON] ()
-            :<|> "logout" :> ReqBody '[PlainText] String :> Post '[JSON] ()
-            :<|> "gettodaydata" :> Get '[JSON] (Map String [PeriodOfTime]) -- StartTime Length of time
+type MainApi = "login" :> ReqBody '[PlainText] String :> UVerb 'POST '[JSON] '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()]
+            :<|> "logout" :> ReqBody '[PlainText] String :> UVerb 'POST '[JSON] '[WithStatus 200 (), WithStatus 400 ()]
+            :<|> "gettodaydata" :> Get '[JSON] (Map String [PeriodOfTime])
             :<|> "getalldata" :> Get '[JSON] (Map String [PeriodOfTimePlusDay])
 
 type Api = "api" :> "v1" :> MainApi
@@ -91,17 +111,15 @@ createUserIfNotExists :: MonadIO m => String -> ReaderT SqlBackend m PersonId
 createUserIfNotExists name = do p <- getPersonNamed name
                                 case p of
                                     Just pid -> pure pid
-                                    Nothing -> do -- pool <- ask
-                                                  -- liftIO $ withResource pool $ \r -> runReaderT  r
-                                                  insert $ Person name
+                                    Nothing -> do insert $ Person name
 
 
-newTimeSlotUser :: MonadIO m => String -> Day -> DiffTime -> ReaderT SqlBackend m ()
-newTimeSlotUser name cday time = do p <- getPersonNamed name
+newTimeSlotUser :: (MonadIO m, IsMember (WithStatus 500 ()) xs) => String -> Day -> DiffTime -> UVerbT xs (ReaderT SqlBackend m) ()
+newTimeSlotUser name cday time = do p <- lift $ getPersonNamed name
                                     case p of
-                                       Nothing -> liftIO $ putStrLn "error person doesn't exist"
+                                       Nothing -> throwUVerb $ WithStatus @500 ()
                                        Just pid -> do
-                                           slots <- select $ do
+                                           slots <- lift $ select $ do
                                              timeSlot <- from $ table @TimeSlot
                                              where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday) &&. timeSlot ^. TimeSlotLengthOfTime ==. val 0)
                                              pure timeSlot
@@ -109,20 +127,19 @@ newTimeSlotUser name cday time = do p <- getPersonNamed name
                                                [] -> do -- p <- ask
                                                         -- liftIO $ withResource p $ \r -> runReaderT
                                                         --      r
-                                                        liftIO $ putStrLn "inserting time slot"
-                                                        _ <- insert $ TimeSlot (day2Int cday) pid (currentSeconds time) 0
+                                                        _ <- lift $ insert $ TimeSlot (day2Int cday) pid (currentSeconds time) 0
                                                         pure ()
 
-                                               (_:_) -> liftIO $ putStrLn "no inserting time slot" >> pure ()
+                                               (_:_) -> pure ()
 
-updateEndTimeForUser :: MonadIO m => String -> Day -> DiffTime -> ReaderT SqlBackend m ()
+updateEndTimeForUser :: (MonadIO m, IsMember (WithStatus 400 ()) xs) => String -> Day -> DiffTime -> UVerbT xs (ReaderT SqlBackend m) ()
 updateEndTimeForUser s cday time =
-    do n <- getPersonNamed s
+    do n <- lift $ getPersonNamed s
        case n of
-         Just pid -> update $ \timeSlot -> do
+         Just pid -> lift $ update $ \timeSlot -> do
                              where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday) &&. timeSlot ^. TimeSlotLengthOfTime ==. val 0)
                              set timeSlot [TimeSlotLengthOfTime =. val (currentSeconds time) -. timeSlot ^. TimeSlotStartTime ]
-         Nothing -> liftIO $ putStrLn "can't find user of that name"
+         Nothing -> throwUVerb $ WithStatus @400 ()
 
 
 getUserName :: String -> Maybe String
@@ -137,27 +154,26 @@ api cons = login
  :<|> logout
  :<|> gettodaydata
  :<|> getalldata
- where login dat = do liftIO $ putStrLn "at top level"
-                      runReaderT
-                        (case getUserName dat of
+ where login :: String -> Handler (Union '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()])
+       login dat = do (runReaderT
+                        (runUVerbT $ case getUserName dat of
                               Just username -> do
-                                liftIO $ putStrLn "in login"
-                                _ <- createUserIfNotExists username
+                                lift $ createUserIfNotExists username
                                 (UTCTime cday startTime) <- liftIO $ getCurrentTime
                                 newTimeSlotUser username cday startTime
-                                pure ()
-                              Nothing -> liftIO $ putStrLn "error: invalid format") cons
+                                pure $ WithStatus @200 ()
+                              Nothing -> throwUVerb $ WithStatus @400 ()) cons ) -- :: UVerbT '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()] (ReaderT SqlBackend Handler) ())
        logout dat = runReaderT (
-              case getUserName dat of
+              runUVerbT $ case getUserName dat of
                   Just username -> do
                       (UTCTime cday currentTime) <- liftIO $ getCurrentTime
                       updateEndTimeForUser username cday currentTime
-                  Nothing -> liftIO $ putStrLn "error: invalid format"
+                      pure $ WithStatus @200 ()
+                  Nothing -> throwUVerb $ WithStatus @400 ()
            ) cons
        gettodaydata =
             runReaderT (
-          do liftIO $ putStrLn "hello world"
-             dat <- select $ do
+          do dat <- select $ do
                  (t:&p) <- from $ table @TimeSlot
                                   `InnerJoin`
                                   table @Person
