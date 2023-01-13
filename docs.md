@@ -55,6 +55,34 @@
 {"janeSmith":[{"lengthOfPeriod":50,"start":5033},{"lengthOfPeriod":70,"start":5070}],"johnSmith":[{"lengthOfPeriod":50,"start":5033}]}
 ```
 
+## GET /api/v1/loggedin/:email
+
+### Captures:
+
+- *email*: name/email of person to check if logged in
+
+### Response:
+
+- Status code 200
+- Headers: []
+
+- Supported content types are:
+
+    - `application/json;charset=utf-8`
+    - `application/json`
+
+- Example (`application/json;charset=utf-8`, `application/json`):
+
+```javascript
+false
+```
+
+- Example (`application/json;charset=utf-8`, `application/json`):
+
+```javascript
+true
+```
+
 ## POST /api/v1/login
 
 ### Request:
