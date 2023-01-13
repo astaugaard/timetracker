@@ -26,6 +26,8 @@ source-repository head
 executable timetracker-exe
   main-is: Main.hs
   other-modules:
+      Api
+      Docs
       Paths_timetracker
   hs-source-dirs:
       backend
@@ -33,15 +35,18 @@ executable timetracker-exe
   build-depends:
       aeson
     , base >=4.7 && <5
+    , bytestring
     , containers
     , esqueleto
     , hoauth2
     , monad-logger
     , mtl
+    , optparse-applicative
     , persistent >=2.12
     , persistent-postgresql
     , resource-pool
     , servant
+    , servant-docs
     , servant-server
     , time
     , warp
@@ -58,15 +63,18 @@ test-suite timetracker-test
   build-depends:
       aeson
     , base >=4.7 && <5
+    , bytestring
     , containers
     , esqueleto
     , hoauth2
     , monad-logger
     , mtl
+    , optparse-applicative
     , persistent >=2.12
     , persistent-postgresql
     , resource-pool
     , servant
+    , servant-docs
     , servant-server
     , time
     , warp

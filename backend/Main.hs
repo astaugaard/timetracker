@@ -40,6 +40,9 @@ import Control.Monad.Logger
 import Data.Aeson
 import GHC.Generics (Generic)
 import Control.Monad.Except (ExceptT (..), MonadError (..), MonadTrans (..), runExceptT)
+import Api
+import Options.Applicative
+import Docs
 
 -- uverbT taken from servant documenation
 newtype UVerbT xs m a = UVerbT { unUVerbT :: ExceptT (Union xs) m a }
@@ -61,14 +64,6 @@ runUVerbT (UVerbT act) = either id id <$> runExceptT (act >>= respond)
 throwUVerb :: (Monad m, HasStatus x, IsMember x xs) => x -> UVerbT xs m a
 throwUVerb = UVerbT . ExceptT . fmap Left . respond
 
-
-data PeriodOfTime = PeriodOfTime {start :: Int, lengthOfPeriod :: Int} deriving (Generic)
-
-data PeriodOfTimePlusDay = PeriodOfTimePlusDay {start :: Int, lengthOfPeriod :: Int, day :: Int} deriving (Generic)
-
-instance ToJSON PeriodOfTime
-instance ToJSON PeriodOfTimePlusDay
-
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
   Person
     username String
@@ -80,17 +75,6 @@ share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
     lengthOfTime Int
     deriving Eq Show
 |] -- Times in seconds since start of day
-
-
-
-type MainApi = "login" :> ReqBody '[PlainText] String :> UVerb 'POST '[JSON] '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()]
-            :<|> "logout" :> ReqBody '[PlainText] String :> UVerb 'POST '[JSON] '[WithStatus 200 (), WithStatus 400 ()]
-            :<|> "gettodaydata" :> Get '[JSON] (Map String [PeriodOfTime])
-            :<|> "getalldata" :> Get '[JSON] (Map String [PeriodOfTimePlusDay])
-
-type Api = "api" :> "v1" :> MainApi
-      :<|> "resource" :> Raw
-      :<|> Raw
 
 day2Int :: Day -> Int
 day2Int = fromEnum . toModifiedJulianDay
@@ -142,35 +126,24 @@ updateEndTimeForUser s cday time =
          Nothing -> throwUVerb $ WithStatus @400 ()
 
 
-getUserName :: String -> Maybe String
-getUserName s = if take (length prefix) s == prefix then
-                  Just $ drop (length prefix) s
-                else
-                  Nothing
-  where prefix = "email:"
+
 
 api :: SqlBackend -> Server MainApi
 api cons = login
  :<|> logout
  :<|> gettodaydata
  :<|> getalldata
- where login :: String -> Handler (Union '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()])
-       login dat = do (runReaderT
-                        (runUVerbT $ case getUserName dat of
-                              Just username -> do
-                                lift $ createUserIfNotExists username
-                                (UTCTime cday startTime) <- liftIO $ getCurrentTime
-                                newTimeSlotUser username cday startTime
-                                pure $ WithStatus @200 ()
-                              Nothing -> throwUVerb $ WithStatus @400 ()) cons ) -- :: UVerbT '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()] (ReaderT SqlBackend Handler) ())
-       logout dat = runReaderT (
-              runUVerbT $ case getUserName dat of
-                  Just username -> do
+ where login :: UserEmail -> Handler (Union '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()])
+       login (UserEmail username) = runReaderT
+                        (runUVerbT $ do lift $ createUserIfNotExists username
+                                        (UTCTime cday startTime) <- liftIO $ getCurrentTime
+                                        newTimeSlotUser username cday startTime
+                                        pure $ (WithStatus @200 () :: WithStatus 200 ())) cons
+       logout (UserEmail username) = runReaderT (
+              runUVerbT $ do
                       (UTCTime cday currentTime) <- liftIO $ getCurrentTime
                       updateEndTimeForUser username cday currentTime
-                      pure $ WithStatus @200 ()
-                  Nothing -> throwUVerb $ WithStatus @400 ()
-           ) cons
+                      pure $ WithStatus @200 ()) cons
        gettodaydata =
             runReaderT (
           do dat <- select $ do
@@ -201,11 +174,24 @@ server cons = api cons
         html = serveDirectoryWebApp "frontend/html"
             -- should change this to serve to add the .html tag... later
 
+data ProgOpts = ProgOpts {printDocs :: Bool}
 
+optsParser = subparser (command "run" (info (pure $ ProgOpts False) (progDesc "run the server"))
+                     <> command "docs" (info (pure $ ProgOpts True) (progDesc "print docs")))
 
 main :: IO ()
-main = runNoLoggingT $ withPostgresqlConn "host=localhost port=5432 dbname=postgres" $ \conn ->
-        let app = serve (Proxy :: Proxy Api) (server conn)
-        in do runReaderT (runMigration migrateAll) conn
-              liftIO $ run 8000 app
+main = runMain =<< execParser opts
+  where opts = info (optsParser <**> helper)
+                  ( fullDesc
+                 <> header "a server for tracking time of groups")
 
+
+
+runMain :: ProgOpts -> IO ()
+runMain (ProgOpts False) =
+  runNoLoggingT $ withPostgresqlConn "host=localhost port=5432 dbname=postgres" $ \conn ->
+       let app = serve (Proxy :: Proxy Api) (server conn)
+       in do runReaderT (runMigration migrateAll) conn
+             liftIO $ run 8000 app
+
+runMain (ProgOpts True) = putStrLn getDocs
