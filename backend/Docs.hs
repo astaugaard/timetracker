@@ -51,6 +51,11 @@ instance ToSample (Map String [PeriodOfTimePlusDay]) where
 
 instance ToSample UserEmail where
     toSamples _ = [("the general format for passing in the users email is", UserEmail "<email>")]
+
+instance ToCapture(Capture "email" String) where
+    toCapture _ = DocCapture "email"
+                             "name/email of person to check if logged in"
+
 api :: Proxy Api
 api = Proxy
 

@@ -133,6 +133,7 @@ api cons = login
  :<|> logout
  :<|> gettodaydata
  :<|> getalldata
+ :<|> loggedin
  where login :: UserEmail -> Handler (Union '[WithStatus 200 (), WithStatus 400 (), WithStatus 500 ()])
        login (UserEmail username) = runReaderT
                         (runUVerbT $ do lift $ createUserIfNotExists username
@@ -164,6 +165,19 @@ api cons = login
                                   pure (p ^. PersonUsername, (t ^. TimeSlotStartTime, t ^.TimeSlotLengthOfTime , t ^. TimeSlotDay))
                pure $ Map.fromListWith (++) $ map (\(n,(s,l,d)) -> (unValue n,[PeriodOfTimePlusDay (unValue s) (unValue l) (unValue d)])) dat
 
+           ) cons
+       loggedin name = runReaderT (
+             do (UTCTime cday currentTime) <- liftIO $ getCurrentTime
+                dat <- select $ (do (t:&p) <- from $ table @TimeSlot
+                                                    `InnerJoin`
+                                                    table @Person
+                                                      `on` \(timeSlot :& p) ->
+                                                           timeSlot ^. TimeSlotPerson ==. p ^. PersonId
+                                    where_ (t ^. TimeSlotLengthOfTime ==. val 0
+                                        &&. t ^. TimeSlotDay ==. val (day2Int cday)
+                                        &&. p ^. PersonUsername ==. val name)
+                                    pure (t:&p))
+                pure $ not $ null dat
            ) cons
 
 server :: SqlBackend -> Server Api

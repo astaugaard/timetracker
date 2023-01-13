@@ -46,6 +46,7 @@ type MainApi = "login" :> ReqBody '[PlainText] UserEmail :> UVerb 'POST '[JSON] 
             :<|> "logout" :> ReqBody '[PlainText] UserEmail :> UVerb 'POST '[JSON] '[WithStatus 200 (), WithStatus 400 ()]
             :<|> "gettodaydata" :> Get '[JSON] (Map String [PeriodOfTime])
             :<|> "getalldata" :> Get '[JSON] (Map String [PeriodOfTimePlusDay])
+            :<|> "loggedin" :> Capture "email" String :> Get '[JSON] Bool
 
 type Api = "api" :> "v1" :> MainApi
       :<|> "resource" :> Raw
