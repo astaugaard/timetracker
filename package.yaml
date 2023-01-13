@@ -20,6 +20,18 @@ extra-source-files:
 description:         Please see the README on GitHub at <https://github.com/astaugaard/timetracker#readme>
 
 dependencies:
+- servant
+- hoauth2
+- esqueleto
+- servant-server
+- persistent >= 2.12
+- persistent-postgresql
+- containers
+- time
+- mtl
+- resource-pool
+- warp
+- monad-logger
 - base >= 4.7 && < 5
 
 ghc-options:

@@ -32,6 +32,18 @@ executable timetracker-exe
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
+    , esqueleto
+    , hoauth2
+    , monad-logger
+    , mtl
+    , persistent >=2.12
+    , persistent-postgresql
+    , resource-pool
+    , servant
+    , servant-server
+    , time
+    , warp
   default-language: Haskell2010
 
 test-suite timetracker-test
@@ -44,4 +56,16 @@ test-suite timetracker-test
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , containers
+    , esqueleto
+    , hoauth2
+    , monad-logger
+    , mtl
+    , persistent >=2.12
+    , persistent-postgresql
+    , resource-pool
+    , servant
+    , servant-server
+    , time
+    , warp
   default-language: Haskell2010
