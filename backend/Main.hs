@@ -14,13 +14,15 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Main (main) where
 
 import Network.Wai.Handler.Warp (run)
 import Servant
-import Servant.API
-import Servant.Server
+-- import Servant.API
+-- import Servant.Server
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Database.Esqueleto.Experimental
@@ -35,8 +37,17 @@ import Data.Time.Clock
 import Data.Time.Calendar
 import Control.Monad.Reader
 import Database.Persist.Postgresql (withPostgresqlConn)
-import Data.Pool
+-- import Data.Pool
 import Control.Monad.Logger
+import Data.Aeson
+import GHC.Generics (Generic)
+
+data PeriodOfTime = PeriodOfTime {start :: Int, lengthOfPeriod :: Int} deriving (Generic)
+
+data PeriodOfTimePlusDay = PeriodOfTimePlusDay {start :: Int, lengthOfPeriod :: Int, day :: Int} deriving (Generic)
+
+instance ToJSON PeriodOfTime
+instance ToJSON PeriodOfTimePlusDay
 
 share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
   Person
@@ -50,10 +61,12 @@ share [mkPersist sqlSettings, mkMigrate "migrateAll"] [persistLowerCase|
     deriving Eq Show
 |] -- Times in seconds since start of day
 
+
+
 type MainApi = "login" :> ReqBody '[PlainText] String :> Post '[JSON] ()
             :<|> "logout" :> ReqBody '[PlainText] String :> Post '[JSON] ()
-            :<|> "gettodaydata" :> Get '[JSON] (Map String (Int,Int)) -- StartTime Length of time
-            :<|> "getalldata" :> Get '[JSON] (Map String [(Int,Int,Int)])
+            :<|> "gettodaydata" :> Get '[JSON] (Map String [PeriodOfTime]) -- StartTime Length of time
+            :<|> "getalldata" :> Get '[JSON] (Map String [PeriodOfTimePlusDay])
 
 type Api = "api" :> "v1" :> MainApi
       :<|> "resource" :> Raw
@@ -77,7 +90,7 @@ getPersonNamed name = do peopleNamed <- select $ do
 createUserIfNotExists :: MonadIO m => String -> ReaderT SqlBackend m PersonId
 createUserIfNotExists name = do p <- getPersonNamed name
                                 case p of
-                                    Just p -> pure p
+                                    Just pid -> pure pid
                                     Nothing -> do -- pool <- ask
                                                   -- liftIO $ withResource pool $ \r -> runReaderT  r
                                                   insert $ Person name
@@ -90,25 +103,25 @@ newTimeSlotUser name cday time = do p <- getPersonNamed name
                                        Just pid -> do
                                            slots <- select $ do
                                              timeSlot <- from $ table @TimeSlot
-                                             where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday))
+                                             where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday) &&. timeSlot ^. TimeSlotLengthOfTime ==. val 0)
                                              pure timeSlot
                                            case slots of
                                                [] -> do -- p <- ask
                                                         -- liftIO $ withResource p $ \r -> runReaderT
                                                         --      r
                                                         liftIO $ putStrLn "inserting time slot"
-                                                        insert $ TimeSlot (day2Int cday) pid (currentSeconds time) 0
+                                                        _ <- insert $ TimeSlot (day2Int cday) pid (currentSeconds time) 0
                                                         pure ()
 
-                                               (x:xs) -> liftIO $ putStrLn "no inserting time slot" >> pure ()
+                                               (_:_) -> liftIO $ putStrLn "no inserting time slot" >> pure ()
 
 updateEndTimeForUser :: MonadIO m => String -> Day -> DiffTime -> ReaderT SqlBackend m ()
 updateEndTimeForUser s cday time =
     do n <- getPersonNamed s
        case n of
          Just pid -> update $ \timeSlot -> do
-                             set timeSlot [TimeSlotLengthOfTime =. val (currentSeconds time) -. timeSlot ^. TimeSlotStartTime]
-                             where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday))
+                             where_ (timeSlot ^. TimeSlotPerson ==. val pid &&. timeSlot ^. TimeSlotDay ==. val (day2Int cday) &&. timeSlot ^. TimeSlotLengthOfTime ==. val 0)
+                             set timeSlot [TimeSlotLengthOfTime =. val (currentSeconds time) -. timeSlot ^. TimeSlotStartTime ]
          Nothing -> liftIO $ putStrLn "can't find user of that name"
 
 
@@ -129,38 +142,38 @@ api cons = login
                         (case getUserName dat of
                               Just username -> do
                                 liftIO $ putStrLn "in login"
-                                createUserIfNotExists username
-                                (UTCTime day startTime) <- liftIO $ getCurrentTime
-                                newTimeSlotUser username day startTime
+                                _ <- createUserIfNotExists username
+                                (UTCTime cday startTime) <- liftIO $ getCurrentTime
+                                newTimeSlotUser username cday startTime
                                 pure ()
                               Nothing -> liftIO $ putStrLn "error: invalid format") cons
        logout dat = runReaderT (
               case getUserName dat of
                   Just username -> do
-                      (UTCTime day currentTime) <- liftIO $ getCurrentTime
-                      updateEndTimeForUser username day currentTime
+                      (UTCTime cday currentTime) <- liftIO $ getCurrentTime
+                      updateEndTimeForUser username cday currentTime
                   Nothing -> liftIO $ putStrLn "error: invalid format"
            ) cons
        gettodaydata =
             runReaderT (
           do liftIO $ putStrLn "hello world"
              dat <- select $ do
-                 (t:&p) <- from $ Table @TimeSlot
+                 (t:&p) <- from $ table @TimeSlot
                                   `InnerJoin`
-                                  Table @Person
+                                  table @Person
                                      `on` \(timeSlot :& p) ->
                                         timeSlot ^. TimeSlotPerson ==. p ^. PersonId
                  pure (p ^. PersonUsername, (t ^. TimeSlotStartTime, t ^. TimeSlotLengthOfTime))
-             pure $ Map.fromList $ map (\(a,(b,c)) -> (unValue a, (unValue b, unValue c))) dat
+             pure $ Map.fromListWith (++) $ map (\(a,(b,c)) -> (unValue a, [PeriodOfTime (unValue b) (unValue c)])) dat
            ) cons
        getalldata = runReaderT (
-            do dat <- select $ do (t:&p) <- from $ Table @TimeSlot
+            do dat <- select $ do (t:&p) <- from $ table @TimeSlot
                                                    `InnerJoin`
-                                                   Table @Person
+                                                   table @Person
                                                       `on` \(timeSlot :& p) ->
                                                          timeSlot ^. TimeSlotPerson ==. p ^. PersonId
                                   pure (p ^. PersonUsername, (t ^. TimeSlotStartTime, t ^.TimeSlotLengthOfTime , t ^. TimeSlotDay))
-               pure $ Map.fromListWith (\a b -> a ++ b) $ map (\(n,(s,l,d)) -> (unValue n,[(unValue s, unValue l, unValue d)])) dat
+               pure $ Map.fromListWith (++) $ map (\(n,(s,l,d)) -> (unValue n,[PeriodOfTimePlusDay (unValue s) (unValue l) (unValue d)])) dat
 
            ) cons
 
